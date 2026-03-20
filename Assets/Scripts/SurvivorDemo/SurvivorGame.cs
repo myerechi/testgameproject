@@ -1,6 +1,10 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem.UI;
+#endif
 
 public class SurvivorGame : MonoBehaviour
 {
@@ -12,8 +16,20 @@ public class SurvivorGame : MonoBehaviour
     public float SurvivalTime => survivalTime;
 
     private readonly List<EnemyActor> enemies = new();
+    private readonly List<Transform> groundTiles = new();
     private EnemySpawner spawner;
     private Text hudText;
+    private Camera mainCamera;
+    private Transform groundRoot;
+    private float groundTileSize = 24f;
+    private int groundGridRadius = 2; // 2 => 5x5, 3 => 7x7
+    private GameObject levelUpPanel;
+    private Text levelUpTitle;
+    private readonly List<Button> levelUpButtons = new();
+    private readonly List<WeaponType> offeredWeapons = new();
+    private int pendingLevelUps;
+    private bool isChoosingLevelUp;
+    private static Sprite cachedRuntimeSprite;
 
     private int level = 1;
     private int killCount;
@@ -44,6 +60,22 @@ public class SurvivorGame : MonoBehaviour
         UpdateHud();
     }
 
+    private void LateUpdate()
+    {
+        if (Player == null)
+        {
+            return;
+        }
+
+        if (mainCamera != null)
+        {
+            Vector3 playerPosition = Player.transform.position;
+            mainCamera.transform.position = new Vector3(playerPosition.x, playerPosition.y, -10f);
+        }
+
+        UpdateInfiniteGround();
+    }
+
     public void RegisterEnemy(EnemyActor enemy)
     {
         if (!enemies.Contains(enemy))
@@ -59,13 +91,12 @@ public class SurvivorGame : MonoBehaviour
 
     public void SpawnEnemyAt(Vector3 position, float health, float speed, float dps)
     {
-        var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-        go.name = "Enemy";
-        go.transform.position = position;
-        go.transform.localScale = new Vector3(0.9f, 1.2f, 0.9f);
-
-        var renderer = go.GetComponent<Renderer>();
-        renderer.material.color = new Color(0.85f, 0.2f, 0.2f);
+        var go = CreateSpriteEntity(
+            "Enemy",
+            position,
+            new Vector2(1f, 1f),
+            new Color(0.85f, 0.2f, 0.2f),
+            20);
 
         var enemy = go.AddComponent<EnemyActor>();
         enemy.Initialize(this, Player, health, speed, dps);
@@ -76,16 +107,29 @@ public class SurvivorGame : MonoBehaviour
     {
         killCount++;
 
-        var gemObject = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        gemObject.name = "ExpGem";
-        gemObject.transform.position = position + Vector3.up * 0.35f;
-        gemObject.transform.localScale = Vector3.one * 0.3f;
-
-        var renderer = gemObject.GetComponent<Renderer>();
-        renderer.material.color = new Color(0.1f, 0.95f, 0.95f);
+        var gemObject = CreateSpriteEntity(
+            "ExpGem",
+            position,
+            new Vector2(0.35f, 0.35f),
+            new Color(0.1f, 0.95f, 0.95f),
+            10);
 
         var gem = gemObject.AddComponent<ExpGem>();
         gem.Initialize(this, Player, expValue);
+    }
+
+    public GameObject CreateSpriteEntity(string objectName, Vector3 position, Vector2 scale, Color color, int sortingOrder)
+    {
+        var go = new GameObject(objectName);
+        go.transform.position = new Vector3(position.x, position.y, 0f);
+        go.transform.localScale = new Vector3(scale.x, scale.y, 1f);
+
+        var renderer = go.AddComponent<SpriteRenderer>();
+        renderer.sprite = GetRuntimeSprite();
+        renderer.color = color;
+        renderer.sortingLayerName = "Default";
+        renderer.sortingOrder = sortingOrder;
+        return go;
     }
 
     public void AddExperience(float amount)
@@ -111,6 +155,12 @@ public class SurvivorGame : MonoBehaviour
         }
 
         IsGameOver = true;
+        isChoosingLevelUp = false;
+        pendingLevelUps = 0;
+        if (levelUpPanel != null)
+        {
+            levelUpPanel.SetActive(false);
+        }
         Time.timeScale = 0f;
         hudText.text += "\nGAME OVER - Press Play again to retry";
     }
@@ -144,7 +194,6 @@ public class SurvivorGame : MonoBehaviour
     {
         Time.timeScale = 1f;
         BuildCamera();
-        BuildLighting();
         BuildGround();
         BuildPlayer();
         BuildSpawner();
@@ -153,56 +202,85 @@ public class SurvivorGame : MonoBehaviour
 
     private void BuildCamera()
     {
-        Camera camera = Camera.main;
-        if (camera == null)
+        mainCamera = Camera.main;
+        if (mainCamera == null)
         {
             var cameraGo = new GameObject("Main Camera");
-            camera = cameraGo.AddComponent<Camera>();
-            camera.tag = "MainCamera";
+            mainCamera = cameraGo.AddComponent<Camera>();
+            mainCamera.tag = "MainCamera";
         }
 
-        camera.clearFlags = CameraClearFlags.SolidColor;
-        camera.backgroundColor = new Color(0.08f, 0.09f, 0.1f);
-        camera.orthographic = true;
-        camera.orthographicSize = 11f;
-        camera.transform.position = new Vector3(0f, 20f, 0f);
-        camera.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
-    }
-
-    private void BuildLighting()
-    {
-        if (FindFirstObjectByType<Light>() != null)
-        {
-            return;
-        }
-
-        var lightObject = new GameObject("Directional Light");
-        var lightComponent = lightObject.AddComponent<Light>();
-        lightComponent.type = LightType.Directional;
-        lightComponent.color = Color.white;
-        lightComponent.intensity = 1.1f;
-        lightObject.transform.rotation = Quaternion.Euler(55f, -30f, 0f);
+        mainCamera.clearFlags = CameraClearFlags.SolidColor;
+        mainCamera.backgroundColor = new Color(0.08f, 0.09f, 0.1f);
+        mainCamera.orthographic = true;
+        mainCamera.orthographicSize = 13f;
+        mainCamera.transform.position = new Vector3(0f, 0f, -10f);
+        mainCamera.transform.rotation = Quaternion.identity;
     }
 
     private void BuildGround()
     {
-        var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
-        ground.name = "Ground";
-        ground.transform.position = Vector3.zero;
-        ground.transform.localScale = new Vector3(6f, 1f, 6f);
+        groundTiles.Clear();
+        groundRoot = new GameObject("InfiniteGround").transform;
 
-        var renderer = ground.GetComponent<Renderer>();
-        renderer.material.color = new Color(0.18f, 0.2f, 0.22f);
+        for (int y = -groundGridRadius; y <= groundGridRadius; y++)
+        {
+            for (int x = -groundGridRadius; x <= groundGridRadius; x++)
+            {
+                Color tileColor = ((x + y) & 1) == 0
+                    ? new Color(0.16f, 0.18f, 0.2f)
+                    : new Color(0.2f, 0.22f, 0.24f);
+
+                var tile = CreateSpriteEntity(
+                    $"Ground_{x}_{y}",
+                    new Vector3(x * groundTileSize, y * groundTileSize, 0f),
+                    new Vector2(groundTileSize, groundTileSize),
+                    tileColor,
+                    0);
+                tile.transform.SetParent(groundRoot, true);
+                groundTiles.Add(tile.transform);
+            }
+        }
+    }
+
+    private void UpdateInfiniteGround()
+    {
+        if (Player == null || groundTiles.Count == 0)
+        {
+            return;
+        }
+
+        Vector3 playerPos = Player.transform.position;
+        float baseX = Mathf.Floor(playerPos.x / groundTileSize) * groundTileSize;
+        float baseY = Mathf.Floor(playerPos.y / groundTileSize) * groundTileSize;
+
+        int index = 0;
+        for (int y = -groundGridRadius; y <= groundGridRadius; y++)
+        {
+            for (int x = -groundGridRadius; x <= groundGridRadius; x++)
+            {
+                if (index >= groundTiles.Count)
+                {
+                    return;
+                }
+
+                groundTiles[index].position = new Vector3(
+                    baseX + x * groundTileSize,
+                    baseY + y * groundTileSize,
+                    0f);
+                index++;
+            }
+        }
     }
 
     private void BuildPlayer()
     {
-        var playerObject = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-        playerObject.name = "Player";
-        playerObject.transform.position = new Vector3(0f, 0.6f, 0f);
-
-        var renderer = playerObject.GetComponent<Renderer>();
-        renderer.material.color = new Color(0.25f, 0.75f, 0.35f);
+        var playerObject = CreateSpriteEntity(
+            "Player",
+            Vector3.zero,
+            new Vector2(1f, 1f),
+            new Color(0.25f, 0.75f, 0.35f),
+            25);
 
         Player = playerObject.AddComponent<PlayerActor>();
         Player.Initialize(this);
@@ -216,6 +294,8 @@ public class SurvivorGame : MonoBehaviour
 
     private void BuildHud()
     {
+        EnsureEventSystem();
+
         var canvasObject = new GameObject("HUD");
         var canvas = canvasObject.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
@@ -239,17 +319,37 @@ public class SurvivorGame : MonoBehaviour
         rect.sizeDelta = new Vector2(720f, 240f);
 
         UpdateHud();
+        BuildLevelUpPanel(canvasObject.transform);
+    }
+
+    private void EnsureEventSystem()
+    {
+        if (FindFirstObjectByType<EventSystem>() != null)
+        {
+            return;
+        }
+
+        var eventSystemObject = new GameObject("EventSystem");
+        eventSystemObject.AddComponent<EventSystem>();
+#if ENABLE_INPUT_SYSTEM
+        eventSystemObject.AddComponent<InputSystemUIInputModule>();
+#else
+        eventSystemObject.AddComponent<StandaloneInputModule>();
+#endif
     }
 
     private void LevelUp()
     {
         level++;
         nextLevelExp = 4f + (level * 2.25f);
+        pendingLevelUps++;
 
         if (Player != null)
         {
             Player.ApplyLevelBonus();
         }
+
+        TryOpenLevelUpChoice();
     }
 
     private void UpdateHud()
@@ -261,6 +361,186 @@ public class SurvivorGame : MonoBehaviour
 
         hudText.text = $"HP {Player.CurrentHealth:0}/{Player.MaxHealth:0}\n" +
                        $"Level {level}   XP {currentExp:0.0}/{nextLevelExp:0.0}\n" +
-                       $"Kills {killCount}   Time {survivalTime:0.0}s";
+                       $"Kills {killCount}   Time {survivalTime:0.0}s\n" +
+                       $"Weapons {Player.GetWeaponHudText()}";
+    }
+
+    private void BuildLevelUpPanel(Transform parent)
+    {
+        levelUpPanel = new GameObject("LevelUpPanel");
+        levelUpPanel.transform.SetParent(parent, false);
+        var panelImage = levelUpPanel.AddComponent<Image>();
+        panelImage.color = new Color(0f, 0f, 0f, 0.82f);
+
+        var panelRect = panelImage.rectTransform;
+        panelRect.anchorMin = Vector2.zero;
+        panelRect.anchorMax = Vector2.one;
+        panelRect.offsetMin = Vector2.zero;
+        panelRect.offsetMax = Vector2.zero;
+
+        var titleObject = new GameObject("Title");
+        titleObject.transform.SetParent(levelUpPanel.transform, false);
+        levelUpTitle = titleObject.AddComponent<Text>();
+        levelUpTitle.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        levelUpTitle.fontSize = 36;
+        levelUpTitle.alignment = TextAnchor.MiddleCenter;
+        levelUpTitle.color = Color.white;
+        levelUpTitle.text = "LEVEL UP - Choose 1";
+
+        var titleRect = levelUpTitle.rectTransform;
+        titleRect.anchorMin = new Vector2(0.5f, 0.5f);
+        titleRect.anchorMax = new Vector2(0.5f, 0.5f);
+        titleRect.pivot = new Vector2(0.5f, 0.5f);
+        titleRect.sizeDelta = new Vector2(900f, 70f);
+        titleRect.anchoredPosition = new Vector2(0f, 150f);
+
+        for (int i = 0; i < 3; i++)
+        {
+            int buttonIndex = i;
+            var buttonObject = new GameObject($"Choice_{i + 1}");
+            buttonObject.transform.SetParent(levelUpPanel.transform, false);
+
+            var image = buttonObject.AddComponent<Image>();
+            image.color = new Color(0.14f, 0.16f, 0.2f, 0.95f);
+
+            var button = buttonObject.AddComponent<Button>();
+            button.targetGraphic = image;
+            button.onClick.AddListener(() => OnSelectWeapon(buttonIndex));
+            levelUpButtons.Add(button);
+
+            var rect = image.rectTransform;
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.sizeDelta = new Vector2(720f, 88f);
+            rect.anchoredPosition = new Vector2(0f, 40f - i * 104f);
+
+            var labelObject = new GameObject("Label");
+            labelObject.transform.SetParent(buttonObject.transform, false);
+            var label = labelObject.AddComponent<Text>();
+            label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            label.fontSize = 26;
+            label.alignment = TextAnchor.MiddleCenter;
+            label.color = Color.white;
+            label.text = "Option";
+
+            var labelRect = label.rectTransform;
+            labelRect.anchorMin = Vector2.zero;
+            labelRect.anchorMax = Vector2.one;
+            labelRect.offsetMin = Vector2.zero;
+            labelRect.offsetMax = Vector2.zero;
+        }
+
+        levelUpPanel.SetActive(false);
+    }
+
+    private void TryOpenLevelUpChoice()
+    {
+        if (IsGameOver || isChoosingLevelUp || pendingLevelUps <= 0 || Player == null || levelUpPanel == null)
+        {
+            return;
+        }
+
+        offeredWeapons.Clear();
+        offeredWeapons.AddRange(Player.RollWeaponChoices(3));
+        if (offeredWeapons.Count == 0)
+        {
+            pendingLevelUps--;
+            if (pendingLevelUps <= 0)
+            {
+                Time.timeScale = 1f;
+            }
+            return;
+        }
+
+        Time.timeScale = 0f;
+        isChoosingLevelUp = true;
+        levelUpPanel.SetActive(true);
+        levelUpTitle.text = pendingLevelUps > 1
+            ? $"LEVEL UP x{pendingLevelUps} - Choose 1"
+            : "LEVEL UP - Choose 1";
+
+        for (int i = 0; i < levelUpButtons.Count; i++)
+        {
+            bool hasChoice = i < offeredWeapons.Count;
+            var button = levelUpButtons[i];
+            button.gameObject.SetActive(hasChoice);
+            if (!hasChoice)
+            {
+                continue;
+            }
+
+            WeaponType weaponType = offeredWeapons[i];
+            int currentLevel = Player.GetWeaponLevel(weaponType);
+            string action = currentLevel <= 0 ? "Unlock Lv.1" : $"Upgrade Lv.{currentLevel + 1}";
+            string text = $"{GetWeaponName(weaponType)}  ({action}/5)";
+            var label = button.GetComponentInChildren<Text>();
+            if (label != null)
+            {
+                label.text = text;
+            }
+        }
+    }
+
+    private void OnSelectWeapon(int index)
+    {
+        if (!isChoosingLevelUp || Player == null || index < 0 || index >= offeredWeapons.Count)
+        {
+            return;
+        }
+
+        Player.ApplyWeaponChoice(offeredWeapons[index]);
+        pendingLevelUps = Mathf.Max(0, pendingLevelUps - 1);
+        isChoosingLevelUp = false;
+        levelUpPanel.SetActive(false);
+        offeredWeapons.Clear();
+
+        if (IsGameOver)
+        {
+            return;
+        }
+
+        if (pendingLevelUps > 0)
+        {
+            TryOpenLevelUpChoice();
+            return;
+        }
+
+        Time.timeScale = 1f;
+    }
+
+    private static string GetWeaponName(WeaponType weaponType)
+    {
+        return weaponType switch
+        {
+            WeaponType.PulseShot => "Pulse Shot",
+            WeaponType.SpreadShot => "Spread Shot",
+            WeaponType.OrbitBlades => "Orbit Blades",
+            WeaponType.PierceLance => "Pierce Lance",
+            WeaponType.NovaBurst => "Nova Burst",
+            _ => weaponType.ToString()
+        };
+    }
+
+    private static Sprite GetRuntimeSprite()
+    {
+        if (cachedRuntimeSprite != null)
+        {
+            return cachedRuntimeSprite;
+        }
+
+        var texture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+        texture.filterMode = FilterMode.Point;
+        texture.wrapMode = TextureWrapMode.Clamp;
+        texture.SetPixel(0, 0, Color.white);
+        texture.Apply();
+
+        cachedRuntimeSprite = Sprite.Create(
+            texture,
+            new Rect(0f, 0f, 1f, 1f),
+            new Vector2(0.5f, 0.5f),
+            1f);
+        cachedRuntimeSprite.name = "RuntimeSprite";
+        return cachedRuntimeSprite;
     }
 }

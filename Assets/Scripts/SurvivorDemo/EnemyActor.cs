@@ -26,15 +26,16 @@ public class EnemyActor : MonoBehaviour
             return;
         }
 
-        Vector3 toPlayer = player.transform.position - transform.position;
+        Vector2 toPlayer = player.transform.position - transform.position;
         float distance = toPlayer.magnitude;
 
         if (distance > 0.001f)
         {
-            transform.position += toPlayer.normalized * (speed * Time.deltaTime);
+            Vector2 movement = toPlayer.normalized * (speed * Time.deltaTime);
+            transform.position += new Vector3(movement.x, movement.y, 0f);
         }
 
-        if (distance <= 1.05f)
+        if (distance <= 0.95f)
         {
             player.ReceiveDamage(dps * Time.deltaTime);
         }

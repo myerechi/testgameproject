@@ -21,13 +21,14 @@ public class ExpGem : MonoBehaviour
             return;
         }
 
-        Vector3 toPlayer = player.transform.position - transform.position;
+        Vector2 toPlayer = player.transform.position - transform.position;
         float distance = toPlayer.magnitude;
 
         if (distance < 6f && distance > 0.0001f)
         {
             float pullSpeed = Mathf.Lerp(0f, 13f, 1f - (distance / 6f));
-            transform.position += toPlayer.normalized * (pullSpeed * Time.deltaTime);
+            Vector2 movement = toPlayer.normalized * (pullSpeed * Time.deltaTime);
+            transform.position += new Vector3(movement.x, movement.y, 0f);
         }
 
         if (distance < 1f)

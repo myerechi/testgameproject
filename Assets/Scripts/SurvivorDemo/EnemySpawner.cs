@@ -36,7 +36,7 @@ public class EnemySpawner : MonoBehaviour
         for (int i = 0; i < count; i++)
         {
             Vector2 ring = Random.insideUnitCircle.normalized * Random.Range(14f, 20f);
-            Vector3 spawnPosition = player.transform.position + new Vector3(ring.x, 0.6f, ring.y);
+            Vector3 spawnPosition = player.transform.position + new Vector3(ring.x, ring.y, 0f);
             game.SpawnEnemyAt(spawnPosition, hp, speed, dps);
         }
     }
