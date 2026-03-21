@@ -13,6 +13,7 @@ public class SurvivorGame : MonoBehaviour
     public PlayerActor Player { get; private set; }
     public IReadOnlyList<EnemyActor> Enemies => enemies;
     public bool IsGameOver { get; private set; }
+    public bool IsSideScrollMode { get; private set; }
     public float SurvivalTime => survivalTime;
 
     private readonly List<EnemyActor> enemies = new();
@@ -23,6 +24,12 @@ public class SurvivorGame : MonoBehaviour
     private Transform groundRoot;
     private float groundTileSize = 24f;
     private int groundGridRadius = 2; // 2 => 5x5, 3 => 7x7
+    private GameObject sideScrollRoot;
+    private Transform sideStartPoint;
+    private Transform sideGoalPoint;
+    private GameObject sidePortal;
+    private Vector3 returnPosition;
+    private float portalCooldown;
     private GameObject levelUpPanel;
     private Text levelUpTitle;
     private readonly List<Button> levelUpButtons = new();
@@ -57,6 +64,8 @@ public class SurvivorGame : MonoBehaviour
         }
 
         survivalTime += Time.deltaTime;
+        portalCooldown = Mathf.Max(0f, portalCooldown - Time.unscaledDeltaTime);
+        UpdateSideScrollState();
         UpdateHud();
     }
 
@@ -70,10 +79,24 @@ public class SurvivorGame : MonoBehaviour
         if (mainCamera != null)
         {
             Vector3 playerPosition = Player.transform.position;
-            mainCamera.transform.position = new Vector3(playerPosition.x, playerPosition.y, -10f);
+            if (IsSideScrollMode)
+            {
+                float leftBound = 0f;
+                float rightBound = 58f;
+                float camHalfWidth = mainCamera.orthographicSize * mainCamera.aspect;
+                float cameraX = Mathf.Clamp(playerPosition.x, leftBound + camHalfWidth, rightBound - camHalfWidth);
+                mainCamera.transform.position = new Vector3(cameraX, 2.5f, -10f);
+            }
+            else
+            {
+                mainCamera.transform.position = new Vector3(playerPosition.x, playerPosition.y, -10f);
+            }
         }
 
-        UpdateInfiniteGround();
+        if (!IsSideScrollMode)
+        {
+            UpdateInfiniteGround();
+        }
     }
 
     public void RegisterEnemy(EnemyActor enemy)
@@ -156,6 +179,7 @@ public class SurvivorGame : MonoBehaviour
 
         IsGameOver = true;
         isChoosingLevelUp = false;
+        IsSideScrollMode = false;
         pendingLevelUps = 0;
         if (levelUpPanel != null)
         {
@@ -198,6 +222,8 @@ public class SurvivorGame : MonoBehaviour
         BuildPlayer();
         BuildSpawner();
         BuildHud();
+        BuildSideScrollStage();
+        BuildSidePortal();
     }
 
     private void BuildCamera()
@@ -320,6 +346,140 @@ public class SurvivorGame : MonoBehaviour
 
         UpdateHud();
         BuildLevelUpPanel(canvasObject.transform);
+    }
+
+    private void BuildSidePortal()
+    {
+        sidePortal = CreateSpriteEntity(
+            "SideScrollPortal",
+            new Vector3(7.5f, 2.5f, 0f),
+            new Vector2(3f, 3f),
+            new Color(0.85f, 0.35f, 1f),
+            18);
+    }
+
+    private void BuildSideScrollStage()
+    {
+        sideScrollRoot = new GameObject("SideScrollStage");
+        sideScrollRoot.SetActive(false);
+
+        CreateStageSprite("StageBG", new Vector3(29f, 2.5f, 0f), new Vector2(64f, 20f), new Color(0.1f, 0.16f, 0.22f), 1);
+        CreateStageSprite("StageGround", new Vector3(29f, -1.8f, 0f), new Vector2(62f, 3.2f), new Color(0.2f, 0.28f, 0.16f), 3);
+        CreateStageSprite("Pipe_1", new Vector3(14f, -0.6f, 0f), new Vector2(2f, 2.4f), new Color(0.16f, 0.7f, 0.2f), 6);
+        CreateStageSprite("Pipe_2", new Vector3(29f, -0.1f, 0f), new Vector2(2.6f, 3.4f), new Color(0.16f, 0.7f, 0.2f), 6);
+        CreateStageSprite("Pipe_3", new Vector3(43f, -0.6f, 0f), new Vector2(2f, 2.4f), new Color(0.16f, 0.7f, 0.2f), 6);
+
+        var startGo = new GameObject("SideStartPoint");
+        startGo.transform.SetParent(sideScrollRoot.transform, false);
+        startGo.transform.position = new Vector3(2f, -0.2f, 0f);
+        sideStartPoint = startGo.transform;
+
+        var goal = CreateStageSprite("SideGoal", new Vector3(58f, 0f, 0f), new Vector2(2.5f, 5f), new Color(1f, 0.86f, 0.25f), 8);
+        sideGoalPoint = goal.transform;
+    }
+
+    private GameObject CreateStageSprite(string name, Vector3 position, Vector2 scale, Color color, int sortingOrder)
+    {
+        var sprite = CreateSpriteEntity(name, position, scale, color, sortingOrder);
+        sprite.transform.SetParent(sideScrollRoot.transform, true);
+        return sprite;
+    }
+
+    private void UpdateSideScrollState()
+    {
+        if (Player == null)
+        {
+            return;
+        }
+
+        if (!IsSideScrollMode)
+        {
+            if (portalCooldown > 0f || sidePortal == null)
+            {
+                return;
+            }
+
+            float triggerDistance = 2.15f;
+            if ((Player.transform.position - sidePortal.transform.position).sqrMagnitude <= triggerDistance * triggerDistance)
+            {
+                EnterSideScrollMode();
+            }
+            return;
+        }
+
+        if (sideGoalPoint != null && Player.transform.position.x >= sideGoalPoint.position.x)
+        {
+            ExitSideScrollModeWithReward();
+        }
+    }
+
+    private void EnterSideScrollMode()
+    {
+        if (IsSideScrollMode || Player == null || sideStartPoint == null)
+        {
+            return;
+        }
+
+        IsSideScrollMode = true;
+        returnPosition = Player.transform.position;
+        if (groundRoot != null)
+        {
+            groundRoot.gameObject.SetActive(false);
+        }
+        if (sidePortal != null)
+        {
+            sidePortal.SetActive(false);
+        }
+        if (sideScrollRoot != null)
+        {
+            sideScrollRoot.SetActive(true);
+        }
+
+        Player.transform.position = sideStartPoint.position;
+        Player.EnterSideScrollMode();
+
+        if (mainCamera != null)
+        {
+            mainCamera.orthographicSize = 8.5f;
+        }
+    }
+
+    private void ExitSideScrollModeWithReward()
+    {
+        if (!IsSideScrollMode || Player == null)
+        {
+            return;
+        }
+
+        IsSideScrollMode = false;
+        Player.ExitSideScrollMode();
+        Player.transform.position = returnPosition + new Vector3(2.8f, 0f, 0f);
+
+        if (sideScrollRoot != null)
+        {
+            sideScrollRoot.SetActive(false);
+        }
+        if (groundRoot != null)
+        {
+            groundRoot.gameObject.SetActive(true);
+        }
+        if (sidePortal != null)
+        {
+            sidePortal.SetActive(true);
+        }
+        if (mainCamera != null)
+        {
+            mainCamera.orthographicSize = 13f;
+        }
+
+        portalCooldown = 1.2f;
+        GrantOneLevelWorthExperience();
+    }
+
+    private void GrantOneLevelWorthExperience()
+    {
+        float neededExp = Mathf.Max(0.1f, nextLevelExp - currentExp);
+        AddExperience(neededExp);
     }
 
     private void EnsureEventSystem()

@@ -35,6 +35,12 @@ public class ProjectileActor : MonoBehaviour
             return;
         }
 
+        if (game.IsSideScrollMode)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
         lifeTime -= Time.deltaTime;
         if (lifeTime <= 0f)
         {

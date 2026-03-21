@@ -37,6 +37,11 @@ public class OrbitBladeActor : MonoBehaviour
             return;
         }
 
+        if (game.IsSideScrollMode)
+        {
+            return;
+        }
+
         float baseAngle = (360f / totalCount) * index;
         float angle = baseAngle + Time.time * rotateSpeed;
         float rad = angle * Mathf.Deg2Rad;

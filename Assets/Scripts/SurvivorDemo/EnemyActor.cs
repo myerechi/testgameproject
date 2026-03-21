@@ -26,6 +26,11 @@ public class EnemyActor : MonoBehaviour
             return;
         }
 
+        if (game.IsSideScrollMode)
+        {
+            return;
+        }
+
         Vector2 toPlayer = player.transform.position - transform.position;
         float distance = toPlayer.magnitude;
 

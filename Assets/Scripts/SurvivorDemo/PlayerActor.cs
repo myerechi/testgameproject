@@ -19,6 +19,7 @@ public class PlayerActor : MonoBehaviour
 
     private readonly Dictionary<WeaponType, int> weaponLevels = new();
     private readonly List<OrbitBladeActor> orbitBlades = new();
+    private float sideVerticalVelocity;
 
     public void Initialize(SurvivorGame owner)
     {
@@ -34,7 +35,13 @@ public class PlayerActor : MonoBehaviour
             return;
         }
 
-        Move();
+        if (game.IsSideScrollMode)
+        {
+            MoveSideScroll();
+            return;
+        }
+
+        MoveTopDown();
         TickWeapons();
     }
 
@@ -124,13 +131,60 @@ public class PlayerActor : MonoBehaviour
         return lines.Count > 0 ? string.Join(", ", lines) : "-";
     }
 
-    private void Move()
+    public void EnterSideScrollMode()
+    {
+        sideVerticalVelocity = 0f;
+    }
+
+    public void ExitSideScrollMode()
+    {
+        sideVerticalVelocity = 0f;
+    }
+
+    private void MoveTopDown()
     {
         Vector2 input = ReadInput();
         Vector3 movement = new Vector3(input.x, input.y, 0f);
 
         transform.position += movement * (moveSpeed * Time.deltaTime);
         transform.position = new Vector3(transform.position.x, transform.position.y, 0f);
+    }
+
+    private void MoveSideScroll()
+    {
+        float groundY = -0.2f;
+        Vector2 input = ReadInput();
+        float horizontal = input.x;
+        float horizontalSpeed = 7.5f;
+        float gravity = -24f;
+        float jumpSpeed = 11f;
+
+        bool grounded = transform.position.y <= groundY + 0.001f;
+        if (grounded)
+        {
+            transform.position = new Vector3(transform.position.x, groundY, 0f);
+            sideVerticalVelocity = Mathf.Max(0f, sideVerticalVelocity);
+        }
+
+        if (grounded && ReadJumpPressed())
+        {
+            sideVerticalVelocity = jumpSpeed;
+        }
+
+        sideVerticalVelocity += gravity * Time.deltaTime;
+
+        Vector3 position = transform.position;
+        position.x += horizontal * horizontalSpeed * Time.deltaTime;
+        position.y += sideVerticalVelocity * Time.deltaTime;
+        position.x = Mathf.Clamp(position.x, 0f, 60f);
+
+        if (position.y < groundY)
+        {
+            position.y = groundY;
+            sideVerticalVelocity = 0f;
+        }
+
+        transform.position = new Vector3(position.x, position.y, 0f);
     }
 
     private void TickWeapons()
@@ -167,6 +221,21 @@ public class PlayerActor : MonoBehaviour
         return Vector2.ClampMagnitude(movement, 1f);
 #else
         return new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
+#endif
+    }
+
+    private bool ReadJumpPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current == null)
+        {
+            return false;
+        }
+        return Keyboard.current.spaceKey.wasPressedThisFrame ||
+               Keyboard.current.wKey.wasPressedThisFrame ||
+               Keyboard.current.upArrowKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.W) || Input.GetKeyDown(KeyCode.UpArrow);
 #endif
     }
 

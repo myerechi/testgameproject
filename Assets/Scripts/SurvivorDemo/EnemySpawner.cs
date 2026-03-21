@@ -14,7 +14,7 @@ public class EnemySpawner : MonoBehaviour
 
     private void Update()
     {
-        if (game == null || player == null || game.IsGameOver)
+        if (game == null || player == null || game.IsGameOver || game.IsSideScrollMode)
         {
             return;
         }
