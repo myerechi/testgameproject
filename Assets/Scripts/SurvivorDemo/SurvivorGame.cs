@@ -8,6 +8,21 @@ using UnityEngine.InputSystem.UI;
 
 public class SurvivorGame : MonoBehaviour
 {
+    private struct SidePlatform
+    {
+        public float Left;
+        public float Right;
+        public float Top;
+    }
+
+    private struct SideBlocker
+    {
+        public float Left;
+        public float Right;
+        public float Bottom;
+        public float Top;
+    }
+
     public static SurvivorGame Instance { get; private set; }
 
     public PlayerActor Player { get; private set; }
@@ -18,6 +33,9 @@ public class SurvivorGame : MonoBehaviour
 
     private readonly List<EnemyActor> enemies = new();
     private readonly List<Transform> groundTiles = new();
+    private readonly List<GameObject> hiddenTopDownObjects = new();
+    private readonly List<SidePlatform> sidePlatforms = new();
+    private readonly List<SideBlocker> sideBlockers = new();
     private EnemySpawner spawner;
     private Text hudText;
     private Camera mainCamera;
@@ -27,12 +45,18 @@ public class SurvivorGame : MonoBehaviour
     private GameObject sideScrollRoot;
     private Transform sideStartPoint;
     private Transform sideGoalPoint;
+    private Transform sideEnemyRoot;
     private GameObject sidePortal;
     private Vector3 returnPosition;
     private float portalCooldown;
     private GameObject levelUpPanel;
     private Text levelUpTitle;
     private readonly List<Button> levelUpButtons = new();
+    private GameObject sideJumpBarRoot;
+    private Image sideJumpBarFill;
+    private Text sideJumpBarLabel;
+    private GameObject sideJumpDebugRoot;
+    private Text sideJumpDebugText;
     private readonly List<WeaponType> offeredWeapons = new();
     private int pendingLevelUps;
     private bool isChoosingLevelUp;
@@ -76,22 +100,7 @@ public class SurvivorGame : MonoBehaviour
             return;
         }
 
-        if (mainCamera != null)
-        {
-            Vector3 playerPosition = Player.transform.position;
-            if (IsSideScrollMode)
-            {
-                float leftBound = 0f;
-                float rightBound = 58f;
-                float camHalfWidth = mainCamera.orthographicSize * mainCamera.aspect;
-                float cameraX = Mathf.Clamp(playerPosition.x, leftBound + camHalfWidth, rightBound - camHalfWidth);
-                mainCamera.transform.position = new Vector3(cameraX, 2.5f, -10f);
-            }
-            else
-            {
-                mainCamera.transform.position = new Vector3(playerPosition.x, playerPosition.y, -10f);
-            }
-        }
+        UpdateCameraPosition();
 
         if (!IsSideScrollMode)
         {
@@ -112,17 +121,20 @@ public class SurvivorGame : MonoBehaviour
         enemies.Remove(enemy);
     }
 
-    public void SpawnEnemyAt(Vector3 position, float health, float speed, float dps)
+    public void SpawnEnemyAt(Vector3 position, float health, float speed, float dps, EnemyKind enemyKind)
     {
+        PixelSpriteId enemySprite = enemyKind == EnemyKind.Goblin ? PixelSpriteId.Goblin : PixelSpriteId.Slime;
+        Color enemyTint = enemyKind == EnemyKind.Goblin ? new Color(0.95f, 0.95f, 0.95f) : new Color(1f, 1f, 1f);
         var go = CreateSpriteEntity(
-            "Enemy",
+            enemyKind.ToString(),
             position,
-            new Vector2(1f, 1f),
-            new Color(0.85f, 0.2f, 0.2f),
-            20);
+            new Vector2(1.2f, 1.2f),
+            enemyTint,
+            20,
+            PixelArtFactory.Get(enemySprite));
 
         var enemy = go.AddComponent<EnemyActor>();
-        enemy.Initialize(this, Player, health, speed, dps);
+        enemy.Initialize(this, Player, health, speed, dps, enemyKind);
         RegisterEnemy(enemy);
     }
 
@@ -134,21 +146,28 @@ public class SurvivorGame : MonoBehaviour
             "ExpGem",
             position,
             new Vector2(0.35f, 0.35f),
-            new Color(0.1f, 0.95f, 0.95f),
-            10);
+            Color.white,
+            10,
+            PixelArtFactory.Get(PixelSpriteId.ExpGem));
 
         var gem = gemObject.AddComponent<ExpGem>();
         gem.Initialize(this, Player, expValue);
     }
 
-    public GameObject CreateSpriteEntity(string objectName, Vector3 position, Vector2 scale, Color color, int sortingOrder)
+    public GameObject CreateSpriteEntity(
+        string objectName,
+        Vector3 position,
+        Vector2 scale,
+        Color color,
+        int sortingOrder,
+        Sprite sprite = null)
     {
         var go = new GameObject(objectName);
         go.transform.position = new Vector3(position.x, position.y, 0f);
         go.transform.localScale = new Vector3(scale.x, scale.y, 1f);
 
         var renderer = go.AddComponent<SpriteRenderer>();
-        renderer.sprite = GetRuntimeSprite();
+        renderer.sprite = sprite ?? GetRuntimeSprite();
         renderer.color = color;
         renderer.sortingLayerName = "Default";
         renderer.sortingOrder = sortingOrder;
@@ -237,11 +256,12 @@ public class SurvivorGame : MonoBehaviour
         }
 
         mainCamera.clearFlags = CameraClearFlags.SolidColor;
-        mainCamera.backgroundColor = new Color(0.08f, 0.09f, 0.1f);
+        mainCamera.backgroundColor = new Color(0.06f, 0.08f, 0.14f);
         mainCamera.orthographic = true;
         mainCamera.orthographicSize = 13f;
         mainCamera.transform.position = new Vector3(0f, 0f, -10f);
         mainCamera.transform.rotation = Quaternion.identity;
+        UpdateCameraPosition();
     }
 
     private void BuildGround()
@@ -253,16 +273,15 @@ public class SurvivorGame : MonoBehaviour
         {
             for (int x = -groundGridRadius; x <= groundGridRadius; x++)
             {
-                Color tileColor = ((x + y) & 1) == 0
-                    ? new Color(0.16f, 0.18f, 0.2f)
-                    : new Color(0.2f, 0.22f, 0.24f);
+                Sprite groundSprite = GetGroundSpriteForCell(x, y);
 
                 var tile = CreateSpriteEntity(
                     $"Ground_{x}_{y}",
                     new Vector3(x * groundTileSize, y * groundTileSize, 0f),
                     new Vector2(groundTileSize, groundTileSize),
-                    tileColor,
-                    0);
+                    Color.white,
+                    0,
+                    groundSprite);
                 tile.transform.SetParent(groundRoot, true);
                 groundTiles.Add(tile.transform);
             }
@@ -277,8 +296,8 @@ public class SurvivorGame : MonoBehaviour
         }
 
         Vector3 playerPos = Player.transform.position;
-        float baseX = Mathf.Floor(playerPos.x / groundTileSize) * groundTileSize;
-        float baseY = Mathf.Floor(playerPos.y / groundTileSize) * groundTileSize;
+        int baseCellX = Mathf.FloorToInt(playerPos.x / groundTileSize);
+        int baseCellY = Mathf.FloorToInt(playerPos.y / groundTileSize);
 
         int index = 0;
         for (int y = -groundGridRadius; y <= groundGridRadius; y++)
@@ -290,13 +309,24 @@ public class SurvivorGame : MonoBehaviour
                     return;
                 }
 
-                groundTiles[index].position = new Vector3(
-                    baseX + x * groundTileSize,
-                    baseY + y * groundTileSize,
-                    0f);
+                int cellX = baseCellX + x;
+                int cellY = baseCellY + y;
+                groundTiles[index].position = new Vector3(cellX * groundTileSize, cellY * groundTileSize, 0f);
+
+                var renderer = groundTiles[index].GetComponent<SpriteRenderer>();
+                if (renderer != null)
+                {
+                    renderer.sprite = GetGroundSpriteForCell(cellX, cellY);
+                }
                 index++;
             }
         }
+    }
+
+    private static Sprite GetGroundSpriteForCell(int cellX, int cellY)
+    {
+        bool evenTile = ((cellX + cellY) & 1) == 0;
+        return evenTile ? PixelArtFactory.Get(PixelSpriteId.GroundA) : PixelArtFactory.Get(PixelSpriteId.GroundB);
     }
 
     private void BuildPlayer()
@@ -304,9 +334,10 @@ public class SurvivorGame : MonoBehaviour
         var playerObject = CreateSpriteEntity(
             "Player",
             Vector3.zero,
-            new Vector2(1f, 1f),
-            new Color(0.25f, 0.75f, 0.35f),
-            25);
+            new Vector2(1.45f, 1.45f),
+            Color.white,
+            25,
+            PixelArtFactory.Get(PixelSpriteId.HeroKnight));
 
         Player = playerObject.AddComponent<PlayerActor>();
         Player.Initialize(this);
@@ -346,16 +377,40 @@ public class SurvivorGame : MonoBehaviour
 
         UpdateHud();
         BuildLevelUpPanel(canvasObject.transform);
+        BuildSideJumpChargeBar(canvasObject.transform);
+        BuildSideJumpDebugText(canvasObject.transform);
     }
 
     private void BuildSidePortal()
     {
-        sidePortal = CreateSpriteEntity(
-            "SideScrollPortal",
-            new Vector3(7.5f, 2.5f, 0f),
-            new Vector2(3f, 3f),
-            new Color(0.85f, 0.35f, 1f),
-            18);
+        sidePortal = new GameObject("TunnelEntrance");
+        sidePortal.transform.position = new Vector3(7.5f, -4f, 0f);
+
+        var rim = CreateSpriteEntity(
+            "TunnelRim",
+            sidePortal.transform.position,
+            new Vector2(3.2f, 3.2f),
+            Color.white,
+            18,
+            PixelArtFactory.Get(PixelSpriteId.TunnelRim));
+        rim.transform.SetParent(sidePortal.transform, true);
+
+        var hole = CreateSpriteEntity(
+            "TunnelHole",
+            sidePortal.transform.position + new Vector3(0f, -0.08f, 0f),
+            new Vector2(2.3f, 2.3f),
+            Color.white,
+            19,
+            PixelArtFactory.Get(PixelSpriteId.TunnelHole));
+        hole.transform.SetParent(sidePortal.transform, true);
+
+        var arrow = CreateSpriteEntity(
+            "TunnelArrow",
+            sidePortal.transform.position + new Vector3(0f, 2f, 0f),
+            new Vector2(0.4f, 1.4f),
+            new Color(1f, 0.88f, 0.3f),
+            20);
+        arrow.transform.SetParent(sidePortal.transform, true);
     }
 
     private void BuildSideScrollStage()
@@ -363,24 +418,46 @@ public class SurvivorGame : MonoBehaviour
         sideScrollRoot = new GameObject("SideScrollStage");
         sideScrollRoot.SetActive(false);
 
-        CreateStageSprite("StageBG", new Vector3(29f, 2.5f, 0f), new Vector2(64f, 20f), new Color(0.1f, 0.16f, 0.22f), 1);
-        CreateStageSprite("StageGround", new Vector3(29f, -1.8f, 0f), new Vector2(62f, 3.2f), new Color(0.2f, 0.28f, 0.16f), 3);
-        CreateStageSprite("Pipe_1", new Vector3(14f, -0.6f, 0f), new Vector2(2f, 2.4f), new Color(0.16f, 0.7f, 0.2f), 6);
-        CreateStageSprite("Pipe_2", new Vector3(29f, -0.1f, 0f), new Vector2(2.6f, 3.4f), new Color(0.16f, 0.7f, 0.2f), 6);
-        CreateStageSprite("Pipe_3", new Vector3(43f, -0.6f, 0f), new Vector2(2f, 2.4f), new Color(0.16f, 0.7f, 0.2f), 6);
+        sidePlatforms.Clear();
+        sideBlockers.Clear();
+
+        CreateStageSprite("StageBG", new Vector3(29f, 2.5f, 0f), new Vector2(64f, 20f), Color.white, 1, PixelSpriteId.StageSky);
+        CreateStageSprite("StageGround", new Vector3(29f, -1.8f, 0f), new Vector2(62f, 3.2f), Color.white, 3, PixelSpriteId.StageGround);
+        AddSidePlatform(new Vector3(29f, -1.8f, 0f), new Vector2(62f, 3.2f), 0f);
+
+        CreateStageSprite("Pipe_1", new Vector3(14f, -0.6f, 0f), new Vector2(2f, 2.4f), Color.white, 6, PixelSpriteId.Pipe);
+        AddSidePlatform(new Vector3(14f, -0.6f, 0f), new Vector2(2f, 2.4f), 0.12f);
+        AddSideBlocker(new Vector3(14f, -0.6f, 0f), new Vector2(2f, 2.4f), 0.06f);
+
+        CreateStageSprite("Pipe_2", new Vector3(29f, -0.1f, 0f), new Vector2(2.6f, 3.4f), Color.white, 6, PixelSpriteId.Pipe);
+        AddSidePlatform(new Vector3(29f, -0.1f, 0f), new Vector2(2.6f, 3.4f), 0.15f);
+        AddSideBlocker(new Vector3(29f, -0.1f, 0f), new Vector2(2.6f, 3.4f), 0.08f);
+
+        CreateStageSprite("Pipe_3", new Vector3(43f, -0.6f, 0f), new Vector2(2f, 2.4f), Color.white, 6, PixelSpriteId.Pipe);
+        AddSidePlatform(new Vector3(43f, -0.6f, 0f), new Vector2(2f, 2.4f), 0.12f);
+        AddSideBlocker(new Vector3(43f, -0.6f, 0f), new Vector2(2f, 2.4f), 0.06f);
 
         var startGo = new GameObject("SideStartPoint");
         startGo.transform.SetParent(sideScrollRoot.transform, false);
-        startGo.transform.position = new Vector3(2f, -0.2f, 0f);
+        // Spawn at "feet on ground" height for side-scroll controller.
+        startGo.transform.position = new Vector3(2f, 0.52f, 0f);
         sideStartPoint = startGo.transform;
 
-        var goal = CreateStageSprite("SideGoal", new Vector3(58f, 0f, 0f), new Vector2(2.5f, 5f), new Color(1f, 0.86f, 0.25f), 8);
+        var goal = CreateStageSprite("SideGoal", new Vector3(58f, 0f, 0f), new Vector2(2.5f, 5f), Color.white, 8, PixelSpriteId.Goal);
         sideGoalPoint = goal.transform;
+
+        RebuildSideScrollEnemies();
     }
 
-    private GameObject CreateStageSprite(string name, Vector3 position, Vector2 scale, Color color, int sortingOrder)
+    private GameObject CreateStageSprite(
+        string name,
+        Vector3 position,
+        Vector2 scale,
+        Color color,
+        int sortingOrder,
+        PixelSpriteId spriteId)
     {
-        var sprite = CreateSpriteEntity(name, position, scale, color, sortingOrder);
+        var sprite = CreateSpriteEntity(name, position, scale, color, sortingOrder, PixelArtFactory.Get(spriteId));
         sprite.transform.SetParent(sideScrollRoot.transform, true);
         return sprite;
     }
@@ -434,7 +511,9 @@ public class SurvivorGame : MonoBehaviour
         {
             sideScrollRoot.SetActive(true);
         }
+        RebuildSideScrollEnemies();
 
+        SetTopDownActorsVisible(false);
         Player.transform.position = sideStartPoint.position;
         Player.EnterSideScrollMode();
 
@@ -442,6 +521,7 @@ public class SurvivorGame : MonoBehaviour
         {
             mainCamera.orthographicSize = 8.5f;
         }
+        UpdateCameraPosition();
     }
 
     private void ExitSideScrollModeWithReward()
@@ -467,19 +547,277 @@ public class SurvivorGame : MonoBehaviour
         {
             sidePortal.SetActive(true);
         }
+        SetTopDownActorsVisible(true);
         if (mainCamera != null)
         {
             mainCamera.orthographicSize = 13f;
         }
+        UpdateCameraPosition();
 
         portalCooldown = 1.2f;
         GrantOneLevelWorthExperience();
+    }
+
+    private void UpdateCameraPosition()
+    {
+        if (mainCamera == null || Player == null)
+        {
+            return;
+        }
+
+        Vector3 playerPosition = Player.transform.position;
+        if (!IsSideScrollMode)
+        {
+            mainCamera.transform.position = new Vector3(playerPosition.x, playerPosition.y, -10f);
+            return;
+        }
+
+        float leftBound = sideStartPoint != null ? sideStartPoint.position.x - 2f : 0f;
+        float rightBound = sideGoalPoint != null ? sideGoalPoint.position.x : 58f;
+        float stageCenter = (leftBound + rightBound) * 0.5f;
+        float stageHalfWidth = Mathf.Max(0.1f, (rightBound - leftBound) * 0.5f);
+        float camHalfWidth = Mathf.Max(0.1f, mainCamera.orthographicSize * mainCamera.aspect);
+
+        float cameraX;
+        if (camHalfWidth >= stageHalfWidth)
+        {
+            cameraX = stageCenter;
+        }
+        else
+        {
+            cameraX = Mathf.Clamp(playerPosition.x, leftBound + camHalfWidth, rightBound - camHalfWidth);
+        }
+
+        mainCamera.transform.position = new Vector3(cameraX, 2.5f, -10f);
     }
 
     private void GrantOneLevelWorthExperience()
     {
         float neededExp = Mathf.Max(0.1f, nextLevelExp - currentExp);
         AddExperience(neededExp);
+    }
+
+    public float ClampSideScrollX(float x)
+    {
+        return Mathf.Clamp(x, 0f, 60f);
+    }
+
+    public bool IsSideScrollGrounded(float x, float bottomY, float halfWidth, float tolerance, out float groundY)
+    {
+        groundY = float.MinValue;
+        bool found = false;
+
+        for (int i = 0; i < sidePlatforms.Count; i++)
+        {
+            var p = sidePlatforms[i];
+            if (x + halfWidth < p.Left || x - halfWidth > p.Right)
+            {
+                continue;
+            }
+
+            if (Mathf.Abs(bottomY - p.Top) <= tolerance)
+            {
+                if (!found || p.Top > groundY)
+                {
+                    groundY = p.Top;
+                    found = true;
+                }
+            }
+        }
+
+        return found;
+    }
+
+    public bool TryResolveSideScrollGround(float x, float previousBottomY, float nextBottomY, float halfWidth, out float groundY)
+    {
+        groundY = float.MinValue;
+        bool landed = false;
+        const float coyote = 0.05f;
+
+        for (int i = 0; i < sidePlatforms.Count; i++)
+        {
+            var p = sidePlatforms[i];
+            if (x + halfWidth < p.Left || x - halfWidth > p.Right)
+            {
+                continue;
+            }
+
+            bool crossedFromAbove = previousBottomY >= p.Top - coyote && nextBottomY <= p.Top + coyote;
+            if (!crossedFromAbove)
+            {
+                continue;
+            }
+
+            if (!landed || p.Top > groundY)
+            {
+                groundY = p.Top;
+                landed = true;
+            }
+        }
+
+        return landed;
+    }
+
+    public float ResolveSideScrollHorizontal(float previousX, float proposedX, float centerY, float halfWidth, float halfHeight)
+    {
+        float resolvedX = proposedX;
+        float moveDir = Mathf.Sign(proposedX - previousX);
+
+        for (int i = 0; i < sideBlockers.Count; i++)
+        {
+            var b = sideBlockers[i];
+            float currentLeft = resolvedX - halfWidth;
+            float currentRight = resolvedX + halfWidth;
+            float currentBottom = centerY - halfHeight;
+            float currentTop = centerY + halfHeight;
+            bool overlapY = currentTop > b.Bottom && currentBottom < b.Top;
+            if (!overlapY)
+            {
+                continue;
+            }
+
+            bool overlapX = currentRight > b.Left && currentLeft < b.Right;
+            if (overlapX)
+            {
+                if (moveDir > 0f)
+                {
+                    resolvedX = Mathf.Min(resolvedX, b.Left - halfWidth);
+                }
+                else if (moveDir < 0f)
+                {
+                    resolvedX = Mathf.Max(resolvedX, b.Right + halfWidth);
+                }
+                else
+                {
+                    float leftPush = Mathf.Abs(currentRight - b.Left);
+                    float rightPush = Mathf.Abs(b.Right - currentLeft);
+                    resolvedX = leftPush < rightPush ? b.Left - halfWidth : b.Right + halfWidth;
+                }
+                continue;
+            }
+
+            if (proposedX > previousX)
+            {
+                float previousRight = previousX + halfWidth;
+                if (previousRight <= b.Left && currentRight >= b.Left)
+                {
+                    resolvedX = b.Left - halfWidth;
+                }
+            }
+            else if (proposedX < previousX)
+            {
+                float previousLeft = previousX - halfWidth;
+                if (previousLeft >= b.Right && currentLeft <= b.Right)
+                {
+                    resolvedX = b.Right + halfWidth;
+                }
+            }
+        }
+
+        return resolvedX;
+    }
+
+    private void AddSidePlatform(Vector3 center, Vector2 size, float insetX)
+    {
+        float halfWidth = Mathf.Max(0.02f, size.x * 0.5f - insetX);
+        sidePlatforms.Add(new SidePlatform
+        {
+            Left = center.x - halfWidth,
+            Right = center.x + halfWidth,
+            Top = center.y + size.y * 0.5f
+        });
+    }
+
+    private void AddSideBlocker(Vector3 center, Vector2 size, float insetX)
+    {
+        float halfWidth = Mathf.Max(0.02f, size.x * 0.5f - insetX);
+        float halfHeight = size.y * 0.5f;
+        sideBlockers.Add(new SideBlocker
+        {
+            Left = center.x - halfWidth,
+            Right = center.x + halfWidth,
+            Bottom = center.y - halfHeight,
+            Top = center.y + halfHeight
+        });
+    }
+
+    private void RebuildSideScrollEnemies()
+    {
+        if (sideScrollRoot == null)
+        {
+            return;
+        }
+
+        if (sideEnemyRoot != null)
+        {
+            Destroy(sideEnemyRoot.gameObject);
+        }
+
+        var root = new GameObject("SideEnemies");
+        root.transform.SetParent(sideScrollRoot.transform, false);
+        sideEnemyRoot = root.transform;
+
+        SpawnSideEnemy(EnemyKind.Slime, new Vector3(9f, -0.2f, 0f), 7f, 16f, 2.2f, 10f);
+        SpawnSideEnemy(EnemyKind.Goblin, new Vector3(22f, -0.2f, 0f), 18f, 27f, 2.4f, 12f);
+        SpawnSideEnemy(EnemyKind.Slime, new Vector3(29f, 1.6f, 0f), 27.8f, 30.2f, 1.8f, 12f);
+        SpawnSideEnemy(EnemyKind.Goblin, new Vector3(43f, 0.6f, 0f), 41.8f, 44.2f, 2.1f, 13f);
+        SpawnSideEnemy(EnemyKind.Slime, new Vector3(50f, -0.2f, 0f), 47f, 56f, 2.4f, 13f);
+    }
+
+    private void SpawnSideEnemy(EnemyKind kind, Vector3 position, float leftX, float rightX, float speed, float dps)
+    {
+        PixelSpriteId sprite = kind == EnemyKind.Goblin ? PixelSpriteId.Goblin : PixelSpriteId.Slime;
+        var enemyObject = CreateSpriteEntity(
+            $"Side_{kind}",
+            position,
+            new Vector2(1.15f, 1.15f),
+            Color.white,
+            22,
+            PixelArtFactory.Get(sprite));
+        enemyObject.transform.SetParent(sideEnemyRoot, true);
+
+        var actor = enemyObject.AddComponent<SideScrollEnemyActor>();
+        actor.Initialize(this, Player, leftX, rightX, position.y, speed, dps);
+    }
+
+    private void SetTopDownActorsVisible(bool visible)
+    {
+        if (!visible)
+        {
+            hiddenTopDownObjects.Clear();
+            HideObjectsOfType<EnemyActor>();
+            HideObjectsOfType<ExpGem>();
+            HideObjectsOfType<ProjectileActor>();
+            HideObjectsOfType<OrbitBladeActor>();
+            HideObjectsOfType<EnemyProjectileActor>();
+            return;
+        }
+
+        for (int i = 0; i < hiddenTopDownObjects.Count; i++)
+        {
+            var go = hiddenTopDownObjects[i];
+            if (go != null)
+            {
+                go.SetActive(true);
+            }
+        }
+        hiddenTopDownObjects.Clear();
+    }
+
+    private void HideObjectsOfType<T>() where T : Component
+    {
+        var objects = FindObjectsByType<T>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+        for (int i = 0; i < objects.Length; i++)
+        {
+            var go = objects[i].gameObject;
+            if (go == null || go == Player.gameObject || !go.activeSelf)
+            {
+                continue;
+            }
+
+            hiddenTopDownObjects.Add(go);
+            go.SetActive(false);
+        }
     }
 
     private void EnsureEventSystem()
@@ -523,6 +861,45 @@ public class SurvivorGame : MonoBehaviour
                        $"Level {level}   XP {currentExp:0.0}/{nextLevelExp:0.0}\n" +
                        $"Kills {killCount}   Time {survivalTime:0.0}s\n" +
                        $"Weapons {Player.GetWeaponHudText()}";
+    }
+
+    public void SetSideJumpChargeUI(bool visible, float normalized)
+    {
+        if (sideJumpBarRoot == null || sideJumpBarFill == null)
+        {
+            return;
+        }
+
+        bool shouldShow = visible && IsSideScrollMode;
+        if (sideJumpBarRoot.activeSelf != shouldShow)
+        {
+            sideJumpBarRoot.SetActive(shouldShow);
+        }
+
+        sideJumpBarFill.fillAmount = Mathf.Clamp01(normalized);
+        if (sideJumpBarLabel != null)
+        {
+            sideJumpBarLabel.text = $"JUMP {Mathf.RoundToInt(sideJumpBarFill.fillAmount * 100f)}%";
+        }
+    }
+
+    public void SetSideJumpDebugUI(bool visible, string text)
+    {
+        if (sideJumpDebugRoot == null || sideJumpDebugText == null)
+        {
+            return;
+        }
+
+        bool shouldShow = visible && IsSideScrollMode;
+        if (sideJumpDebugRoot.activeSelf != shouldShow)
+        {
+            sideJumpDebugRoot.SetActive(shouldShow);
+        }
+
+        if (shouldShow)
+        {
+            sideJumpDebugText.text = text;
+        }
     }
 
     private void BuildLevelUpPanel(Transform parent)
@@ -592,6 +969,74 @@ public class SurvivorGame : MonoBehaviour
         }
 
         levelUpPanel.SetActive(false);
+    }
+
+    private void BuildSideJumpChargeBar(Transform parent)
+    {
+        sideJumpBarRoot = new GameObject("SideJumpChargeBar");
+        sideJumpBarRoot.transform.SetParent(parent, false);
+
+        var bgImage = sideJumpBarRoot.AddComponent<Image>();
+        bgImage.color = new Color(0f, 0f, 0f, 0.62f);
+        var bgRect = bgImage.rectTransform;
+        bgRect.anchorMin = new Vector2(0.5f, 0f);
+        bgRect.anchorMax = new Vector2(0.5f, 0f);
+        bgRect.pivot = new Vector2(0.5f, 0f);
+        bgRect.anchoredPosition = new Vector2(0f, 24f);
+        bgRect.sizeDelta = new Vector2(340f, 26f);
+
+        var fillObject = new GameObject("Fill");
+        fillObject.transform.SetParent(sideJumpBarRoot.transform, false);
+        sideJumpBarFill = fillObject.AddComponent<Image>();
+        sideJumpBarFill.color = new Color(0.3f, 0.95f, 0.5f, 0.95f);
+        sideJumpBarFill.type = Image.Type.Filled;
+        sideJumpBarFill.fillMethod = Image.FillMethod.Horizontal;
+        sideJumpBarFill.fillOrigin = 0;
+        sideJumpBarFill.fillAmount = 0f;
+
+        var fillRect = sideJumpBarFill.rectTransform;
+        fillRect.anchorMin = new Vector2(0f, 0f);
+        fillRect.anchorMax = new Vector2(1f, 1f);
+        fillRect.offsetMin = new Vector2(3f, 3f);
+        fillRect.offsetMax = new Vector2(-3f, -3f);
+
+        var labelObject = new GameObject("Label");
+        labelObject.transform.SetParent(sideJumpBarRoot.transform, false);
+        sideJumpBarLabel = labelObject.AddComponent<Text>();
+        sideJumpBarLabel.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        sideJumpBarLabel.fontSize = 15;
+        sideJumpBarLabel.alignment = TextAnchor.MiddleCenter;
+        sideJumpBarLabel.color = Color.white;
+        sideJumpBarLabel.text = "JUMP 0%";
+
+        var labelRect = sideJumpBarLabel.rectTransform;
+        labelRect.anchorMin = new Vector2(0f, 0f);
+        labelRect.anchorMax = new Vector2(1f, 1f);
+        labelRect.offsetMin = Vector2.zero;
+        labelRect.offsetMax = Vector2.zero;
+
+        sideJumpBarRoot.SetActive(false);
+    }
+
+    private void BuildSideJumpDebugText(Transform parent)
+    {
+        sideJumpDebugRoot = new GameObject("SideJumpDebugText");
+        sideJumpDebugRoot.transform.SetParent(parent, false);
+        sideJumpDebugText = sideJumpDebugRoot.AddComponent<Text>();
+        sideJumpDebugText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        sideJumpDebugText.fontSize = 16;
+        sideJumpDebugText.alignment = TextAnchor.LowerLeft;
+        sideJumpDebugText.color = new Color(1f, 0.95f, 0.5f);
+        sideJumpDebugText.text = "Jump Debug";
+
+        var rect = sideJumpDebugText.rectTransform;
+        rect.anchorMin = new Vector2(0f, 0f);
+        rect.anchorMax = new Vector2(0f, 0f);
+        rect.pivot = new Vector2(0f, 0f);
+        rect.anchoredPosition = new Vector2(16f, 64f);
+        rect.sizeDelta = new Vector2(700f, 90f);
+
+        sideJumpDebugRoot.SetActive(false);
     }
 
     private void TryOpenLevelUpChoice()

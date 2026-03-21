@@ -19,7 +19,6 @@ public class PlayerActor : MonoBehaviour
 
     private readonly Dictionary<WeaponType, int> weaponLevels = new();
     private readonly List<OrbitBladeActor> orbitBlades = new();
-    private float sideVerticalVelocity;
 
     public void Initialize(SurvivorGame owner)
     {
@@ -133,12 +132,14 @@ public class PlayerActor : MonoBehaviour
 
     public void EnterSideScrollMode()
     {
-        sideVerticalVelocity = 0f;
+        game?.SetSideJumpChargeUI(false, 0f);
+        game?.SetSideJumpDebugUI(false, string.Empty);
     }
 
     public void ExitSideScrollMode()
     {
-        sideVerticalVelocity = 0f;
+        game?.SetSideJumpChargeUI(false, 0f);
+        game?.SetSideJumpDebugUI(false, string.Empty);
     }
 
     private void MoveTopDown()
@@ -152,37 +153,26 @@ public class PlayerActor : MonoBehaviour
 
     private void MoveSideScroll()
     {
-        float groundY = -0.2f;
         Vector2 input = ReadInput();
         float horizontal = input.x;
         float horizontalSpeed = 7.5f;
-        float gravity = -24f;
-        float jumpSpeed = 11f;
-
-        bool grounded = transform.position.y <= groundY + 0.001f;
-        if (grounded)
-        {
-            transform.position = new Vector3(transform.position.x, groundY, 0f);
-            sideVerticalVelocity = Mathf.Max(0f, sideVerticalVelocity);
-        }
-
-        if (grounded && ReadJumpPressed())
-        {
-            sideVerticalVelocity = jumpSpeed;
-        }
-
-        sideVerticalVelocity += gravity * Time.deltaTime;
-
         Vector3 position = transform.position;
-        position.x += horizontal * horizontalSpeed * Time.deltaTime;
-        position.y += sideVerticalVelocity * Time.deltaTime;
-        position.x = Mathf.Clamp(position.x, 0f, 60f);
+        const float halfHeight = 0.72f;
+        const float halfWidth = 0.34f;
 
-        if (position.y < groundY)
+        float previousX = position.x;
+        position.x += horizontal * horizontalSpeed * Time.deltaTime;
+        position.x = game.ClampSideScrollX(position.x);
+        position.x = game.ResolveSideScrollHorizontal(previousX, position.x, position.y, halfWidth, halfHeight);
+
+        float bottomY = position.y - halfHeight;
+        if (game.IsSideScrollGrounded(position.x, bottomY, halfWidth, 2f, out float supportY))
         {
-            position.y = groundY;
-            sideVerticalVelocity = 0f;
+            position.y = supportY + halfHeight;
         }
+
+        game.SetSideJumpChargeUI(false, 0f);
+        game.SetSideJumpDebugUI(false, string.Empty);
 
         transform.position = new Vector3(position.x, position.y, 0f);
     }
@@ -224,20 +214,6 @@ public class PlayerActor : MonoBehaviour
 #endif
     }
 
-    private bool ReadJumpPressed()
-    {
-#if ENABLE_INPUT_SYSTEM
-        if (Keyboard.current == null)
-        {
-            return false;
-        }
-        return Keyboard.current.spaceKey.wasPressedThisFrame ||
-               Keyboard.current.wKey.wasPressedThisFrame ||
-               Keyboard.current.upArrowKey.wasPressedThisFrame;
-#else
-        return Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.W) || Input.GetKeyDown(KeyCode.UpArrow);
-#endif
-    }
 
     private void TickPulseShot()
     {
@@ -265,7 +241,7 @@ public class PlayerActor : MonoBehaviour
         {
             float angle = projectileCount == 1 ? 0f : -totalAngle * 0.5f + (i * 8f);
             Vector2 direction = Rotate(baseDirection, angle);
-            FireProjectile(direction, speed, damage, 0, 2.1f, new Color(1f, 0.88f, 0.2f), 0.35f);
+            FireProjectile(direction, speed, damage, 0, 2.1f, new Color(1f, 0.88f, 0.2f), 0.48f, PixelSpriteId.ShotPulse);
         }
     }
 
@@ -296,7 +272,7 @@ public class PlayerActor : MonoBehaviour
             float t = projectileCount == 1 ? 0f : (float)i / (projectileCount - 1);
             float angle = Mathf.Lerp(-spanAngle * 0.5f, spanAngle * 0.5f, t);
             Vector2 direction = Rotate(baseDirection, angle);
-            FireProjectile(direction, speed, damage, 0, 1.8f, new Color(1f, 0.56f, 0.2f), 0.28f);
+            FireProjectile(direction, speed, damage, 0, 1.8f, new Color(1f, 0.56f, 0.2f), 0.42f, PixelSpriteId.ShotSpread);
         }
     }
 
@@ -326,7 +302,7 @@ public class PlayerActor : MonoBehaviour
         {
             float angle = projectileCount == 1 ? 0f : (i == 0 ? -6f : 6f);
             Vector2 direction = Rotate(baseDirection, angle);
-            FireProjectile(direction, speed, damage, pierceCount, 2.6f, new Color(0.35f, 0.95f, 1f), 0.26f);
+            FireProjectile(direction, speed, damage, pierceCount, 2.6f, new Color(0.35f, 0.95f, 1f), 0.44f, PixelSpriteId.ShotPierce);
         }
     }
 
@@ -348,7 +324,7 @@ public class PlayerActor : MonoBehaviour
         {
             float angle = i * (360f / shots);
             Vector2 direction = Rotate(Vector2.right, angle);
-            FireProjectile(direction, speed, damage, 0, 1.6f, new Color(1f, 0.25f, 0.85f), 0.24f);
+            FireProjectile(direction, speed, damage, 0, 1.6f, new Color(1f, 0.25f, 0.85f), 0.4f, PixelSpriteId.ShotNova);
         }
     }
 
@@ -395,7 +371,8 @@ public class PlayerActor : MonoBehaviour
         int pierceCount,
         float lifeTime,
         Color color,
-        float size)
+        float size,
+        PixelSpriteId spriteId)
     {
         if (direction.sqrMagnitude < 0.0001f || game == null)
         {
@@ -407,7 +384,8 @@ public class PlayerActor : MonoBehaviour
             transform.position + (Vector3)(direction.normalized * 1.1f),
             new Vector2(size, size),
             color,
-            30);
+            30,
+            PixelArtFactory.Get(spriteId));
 
         var projectile = projectileObject.AddComponent<ProjectileActor>();
         projectile.Initialize(game, direction, speed, damage, pierceCount, lifeTime);
